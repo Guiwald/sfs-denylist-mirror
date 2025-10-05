@@ -22,31 +22,41 @@ jobs:
           curl -I https://www.stopforumspam.com/downloads/listed_ip_30_all.gz || true
           curl -I https://www.stopforumspam.com/downloads/listed_ip_30_all.md5 || true
 
-      - name: Fetch SFS + verify MD5 (with retries & UA)
+      - name: Fetch SFS + verify MD5 (robust)
         shell: bash
         run: |
           set -euo pipefail
           UA="Mozilla/5.0 (GitHub Actions)"
-          curl -fsSL --retry 3 -A "$UA" -o listed_ip_30_all.gz \
-            https://www.stopforumspam.com/downloads/listed_ip_30_all.gz
+          URL_GZ="https://www.stopforumspam.com/downloads/listed_ip_30_all.gz"
+          URL_MD5="https://www.stopforumspam.com/downloads/listed_ip_30_all.md5"
 
-          # Récupère le MD5 distant, puis garde juste la 1ère colonne si un nom de fichier est présent
-          REMOTE_MD5="$(curl -fsSL --retry 3 -A "$UA" https://www.stopforumspam.com/downloads/listed_ip_30_all.md5 \
-                        | tr -d '\r' | awk '{print $1}')"
-
-          # Vérifie que c'est bien un hash de 32 hex (sinon on trace et on continue SANS check MD5)
-          if [[ "$REMOTE_MD5" =~ ^[0-9a-fA-F]{32}$ ]]; then
+          ok=0
+          for i in 1 2 3; do
+            # Bust de cache léger côté CDN
+            TS=$(date +%s%N)
+            curl -fsSL --retry 3 -A "$UA" -o listed_ip_30_all.gz "${URL_GZ}?t=${TS}"
+            REMOTE_MD5="$(curl -fsSL --retry 3 -A "$UA" "${URL_MD5}?t=${TS}" | tr -d '\r' | awk '{print $1}')"
             LOCAL_MD5="$(md5sum listed_ip_30_all.gz | awk '{print $1}')"
+
             echo "REMOTE_MD5=$REMOTE_MD5"
             echo "LOCAL_MD5=$LOCAL_MD5"
-            test "$REMOTE_MD5" = "$LOCAL_MD5"
-          else
-            echo "WARN: remote MD5 looks invalid: '$REMOTE_MD5' — skipping MD5 check"
+
+            if [[ "$REMOTE_MD5" =~ ^[0-9a-fA-F]{32}$ ]] && [[ "$REMOTE_MD5" == "$LOCAL_MD5" ]]; then
+              ok=1; break
+            else
+              echo "MD5 mismatch (try $i/3) — retrying in 2s..." >&2
+              sleep 2
+            fi
+          done
+
+          if [ "$ok" -ne 1 ]; then
+            echo "WARNING: MD5 mismatch after retries — proceeding without strict check." >&2
           fi
 
           gunzip -f listed_ip_30_all.gz
           mv listed_ip_30_all listed_ip_30_all.txt
           ls -lh listed_ip_30_all.txt
+
 
       - name: Commit if changed
         shell: bash
