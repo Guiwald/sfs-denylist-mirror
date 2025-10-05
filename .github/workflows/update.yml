@@ -1,8 +1,8 @@
 name: Mirror SFS denylist
 on:
   schedule:
-    - cron: '10 3 * * *'   # 03:10 UTC (~05:10 Paris l'hiver)
-  workflow_dispatch:       # permet de lancer à la main
+    - cron: '10 3 * * *'         # 03:10 UTC (≈ 05:10 heure FR l'hiver)
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,29 +11,56 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Fetch SFS + verify MD5
+      - name: Debug network (headers only)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -I https://www.stopforumspam.com || true
+          curl -I https://www.stopforumspam.com/downloads/listed_ip_30_all.gz || true
+          curl -I https://www.stopforumspam.com/downloads/listed_ip_30_all.md5 || true
+
+      - name: Fetch SFS + verify MD5 (with retries & UA)
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL -o listed_ip_30_all.gz https://www.stopforumspam.com/downloads/listed_ip_30_all.gz
-          REMOTE_MD5="$(curl -fsSL https://www.stopforumspam.com/downloads/listed_ip_30_all.md5 | tr -d '[:space:]')"
-          LOCAL_MD5="$(md5sum listed_ip_30_all.gz | awk '{print $1}')"
-          test "$REMOTE_MD5" = "$LOCAL_MD5"
+          UA="Mozilla/5.0 (GitHub Actions)"
+          curl -fsSL --retry 3 -A "$UA" -o listed_ip_30_all.gz \
+            https://www.stopforumspam.com/downloads/listed_ip_30_all.gz
+
+          # Récupère le MD5 distant, puis garde juste la 1ère colonne si un nom de fichier est présent
+          REMOTE_MD5="$(curl -fsSL --retry 3 -A "$UA" https://www.stopforumspam.com/downloads/listed_ip_30_all.md5 \
+                        | tr -d '\r' | awk '{print $1}')"
+
+          # Vérifie que c'est bien un hash de 32 hex (sinon on trace et on continue SANS check MD5)
+          if [[ "$REMOTE_MD5" =~ ^[0-9a-fA-F]{32}$ ]]; then
+            LOCAL_MD5="$(md5sum listed_ip_30_all.gz | awk '{print $1}')"
+            echo "REMOTE_MD5=$REMOTE_MD5"
+            echo "LOCAL_MD5=$LOCAL_MD5"
+            test "$REMOTE_MD5" = "$LOCAL_MD5"
+          else
+            echo "WARN: remote MD5 looks invalid: '$REMOTE_MD5' — skipping MD5 check"
+          fi
+
           gunzip -f listed_ip_30_all.gz
           mv listed_ip_30_all listed_ip_30_all.txt
+          ls -lh listed_ip_30_all.txt
 
       - name: Commit if changed
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- listed_ip_30_all.txt; then
-            echo "No change."
-          else
+          # Rendez git diff fiable même si le fichier est nouveau
+          git add -N listed_ip_30_all.txt
+          if ! git diff --quiet -- listed_ip_30_all.txt; then
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add listed_ip_30_all.txt
             git commit -m "Update SFS list: $(date -u +'%F %T UTC')"
             git push
+            echo "Committed new list."
+          else
+            echo "No change."
           fi
