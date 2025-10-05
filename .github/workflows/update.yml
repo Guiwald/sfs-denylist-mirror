@@ -1,0 +1,39 @@
+name: Mirror SFS denylist
+on:
+  schedule:
+    - cron: '10 3 * * *'   # 03:10 UTC (~05:10 Paris l'hiver)
+  workflow_dispatch:       # permet de lancer à la main
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch SFS + verify MD5
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o listed_ip_30_all.gz https://www.stopforumspam.com/downloads/listed_ip_30_all.gz
+          REMOTE_MD5="$(curl -fsSL https://www.stopforumspam.com/downloads/listed_ip_30_all.md5 | tr -d '[:space:]')"
+          LOCAL_MD5="$(md5sum listed_ip_30_all.gz | awk '{print $1}')"
+          test "$REMOTE_MD5" = "$LOCAL_MD5"
+          gunzip -f listed_ip_30_all.gz
+          mv listed_ip_30_all listed_ip_30_all.txt
+
+      - name: Commit if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- listed_ip_30_all.txt; then
+            echo "No change."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add listed_ip_30_all.txt
+            git commit -m "Update SFS list: $(date -u +'%F %T UTC')"
+            git push
+          fi
